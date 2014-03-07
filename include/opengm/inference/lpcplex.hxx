@@ -88,7 +88,7 @@ public:
          };
    };
 
-   LPCplex(const GraphicalModelType&, const Parameter& = Parameter());
+   LPCplex(const GraphicalModelType&, const Parameter& = Parameter(),const size_t = 1);
    ~LPCplex();
    virtual std::string name() const 
       { return "LPCplex"; }
@@ -96,11 +96,10 @@ public:
    virtual InferenceTermination infer();
    template<class VisitorType>
    InferenceTermination infer(VisitorType&);
-   virtual InferenceTermination arg(std::vector<LabelType>&, const size_t = 1) const;
-   virtual InferenceTermination args(std::vector<std::vector<LabelType> >&) const 
-      { return UNKNOWN; };
-   void variable(const size_t, IndependentFactorType& out) const;     
-   void factorVariable(const size_t, IndependentFactorType& out) const;
+   virtual InferenceTermination arg(std::vector<LabelType>&, const size_t = 0) const;
+   virtual InferenceTermination args(std::vector<std::vector<LabelType> >&) const;
+   void variable(const size_t, IndependentFactorType& out,const size_t = 0) const;     
+   void factorVariable(const size_t, IndependentFactorType& out,const size_t = 0) const;
    typename GM::ValueType bound() const; 
    typename GM::ValueType value() const;
 
@@ -118,13 +117,14 @@ private:
    std::vector<size_t> idFactorsBegin_; 
    std::vector<std::vector<size_t> > unaryFactors_;
    bool inferenceStarted_;
+   size_t numberOfSolutions_;
     
    IloEnv env_;
    IloModel model_;
    IloNumVarArray x_;
    IloRangeArray c_;
    IloObjective obj_;
-   IloNumArray sol_;
+   std::vector<IloNumArray> sol_;
    IloCplex cplex_;
    ValueType constValue_;
 };
@@ -133,9 +133,11 @@ template<class GM, class ACC>
 LPCplex<GM, ACC>::LPCplex
 (
    const GraphicalModelType& gm, 
-   const Parameter& para
+   const Parameter& para,
+   const size_t numberOfSolutions
+   
 )
-:  gm_(gm), inferenceStarted_(false)
+:  gm_(gm), inferenceStarted_(false), numberOfSolutions_(numberOfSolutions)
 {
    if(typeid(OperatorType) != typeid(opengm::Adder)) {
       throw RuntimeError("This implementation does only supports Min-Plus-Semiring and Max-Plus-Semiring.");
@@ -179,7 +181,10 @@ LPCplex<GM, ACC>::LPCplex
    model_ = IloModel(env_);
    x_ = IloNumVarArray(env_);
    c_ = IloRangeArray(env_);
-   sol_ = IloNumArray(env_);
+   sol_ = std::vector<IloNumArray>();
+   for (int i=0;i<numberOfSolutions_;++i){
+		sol_.push_back(IloNumArray(env_));
+		}
 
    if(typeid(ACC) == typeid(opengm::Minimizer)) {
      obj_ = IloMinimize(env_);
@@ -316,7 +321,14 @@ LPCplex<GM, ACC>::infer
       cplex_.setParam(IloCplex::EpInt, 0);    // amount by which an integer variable can differ from an integer
       cplex_.setParam(IloCplex::EpAGap, 0);   // Absolute MIP gap tolerance
       cplex_.setParam(IloCplex::EpGap, parameter_.epGap_); // Relative MIP gap tolerance
-
+	  
+      //parameter pool settings
+      cplex_.setParam(IloCplex::SolnPoolCapacity , numberOfSolutions_);
+      cplex_.setParam(IloCplex::PopulateLim, numberOfSolutions_);
+      cplex_.setParam(IloCplex::SolnPoolIntensity, 4);
+      cplex_.setParam(IloCplex::SolnPoolReplace, 0);
+      
+		
       // set hints
       cplex_.setParam(IloCplex::CutUp, parameter_.cutUp_);
 
@@ -337,14 +349,15 @@ LPCplex<GM, ACC>::infer
       cplex_.setParam(IloCplex::Covers, parameter_.coverCutLevel_);
       cplex_.setParam(IloCplex::DisjCuts, parameter_.disjunctiverCutLevel_);
       cplex_.setParam(IloCplex::Cliques, parameter_.cliqueCutLevel_);
-      cplex_.setParam(IloCplex::MIRCuts, parameter_.MIRCutLevel_);
   
       // solve problem
       if(!cplex_.solve()) {
          std::cout << "failed to optimize. " <<cplex_.getStatus() << std::endl;
          return UNKNOWN;
-      } 
-      cplex_.getValues(sol_, x_);  
+      }
+      for (int N=0;N<numberOfSolutions_;N++){
+		cplex_.getValues(sol_[N], x_,N);
+	   }  
    }
    catch(IloCplex::Exception e) {
       std::cout << "caught CPLEX exception: " << e << std::endl;
@@ -366,14 +379,15 @@ LPCplex<GM, ACC>::arg
    std::vector<typename LPCplex<GM, ACC>::LabelType>& x, 
    const size_t N
 ) const {
+	OPENGM_ASSERT(0<=N && N<numberOfSolutions_);
    x.resize(gm_.numberOfVariables());
    if(inferenceStarted_) {
       for(size_t node = 0; node < gm_.numberOfVariables(); ++node) {
-         ValueType value = sol_[idNodesBegin_[node]];
+         ValueType value = sol_[N][idNodesBegin_[node]];
          size_t state = 0;
          for(size_t i = 1; i < gm_.numberOfLabels(node); ++i) {
-            if(sol_[idNodesBegin_[node]+i] > value) {
-               value = sol_[idNodesBegin_[node]+i];
+            if(sol_[N][idNodesBegin_[node]+i] > value) {
+               value = sol_[N][idNodesBegin_[node]+i];
                state = i;
             }
          }
@@ -390,16 +404,30 @@ LPCplex<GM, ACC>::arg
 }
 
 template <class GM, class ACC>
+inline InferenceTermination
+LPCplex<GM, ACC>::args
+(
+   std::vector<std::vector<typename LPCplex<GM, ACC>::LabelType> >& x
+) const {
+	x.resize(numberOfSolutions_);
+	for (int index=0;index<numberOfSolutions_;++index){
+		arg(x[index],index);
+		
+	}
+}
+
+template <class GM, class ACC>
 void LPCplex<GM, ACC>::variable
 (
-   const size_t nodeId, 
-   IndependentFactorType& out
+   const size_t nodeId,
+   IndependentFactorType& out,
+   const size_t N
 ) const {
    size_t var[] = {nodeId};
    size_t shape[] = {gm_.numberOfLabels(nodeId)};
    out.assign(var, var + 1, shape, shape + 1);
    for(size_t i = 0; i < gm_.numberOfLabels(nodeId); ++i) {
-      out(i) = sol_[idNodesBegin_[nodeId]+i];
+      out(i) = sol_[N][idNodesBegin_[nodeId]+i];
    }
    //return UNKNOWN;
 }
@@ -408,7 +436,8 @@ template <class GM, class ACC>
 void LPCplex<GM, ACC>::factorVariable
 (
    const size_t factorId, 
-   IndependentFactorType& out
+   IndependentFactorType& out,
+   const size_t N
 ) const {
    std::vector<size_t> var(gm_[factorId].numberOfVariables());
    std::vector<size_t> shape(gm_[factorId].numberOfVariables());
@@ -424,7 +453,7 @@ void LPCplex<GM, ACC>::factorVariable
    else {
       size_t c = 0;
       for(size_t n = idFactorsBegin_[factorId]; n<idFactorsBegin_[factorId]+gm_[factorId].size(); ++n) {
-         out(c++) = sol_[n];
+         out(c++) = sol_[N][n];
       }
    }
    //return UNKNOWN;
