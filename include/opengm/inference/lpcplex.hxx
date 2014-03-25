@@ -321,14 +321,14 @@ LPCplex<GM, ACC>::infer
       cplex_.setParam(IloCplex::EpInt, 0);    // amount by which an integer variable can differ from an integer
       cplex_.setParam(IloCplex::EpAGap, 0);   // Absolute MIP gap tolerance
       cplex_.setParam(IloCplex::EpGap, parameter_.epGap_); // Relative MIP gap tolerance
-	  
+      
       //parameter pool settings
       cplex_.setParam(IloCplex::SolnPoolCapacity , numberOfSolutions_);
-      cplex_.setParam(IloCplex::PopulateLim, numberOfSolutions_);
+      cplex_.setParam(IloCplex::PopulateLim, numberOfSolutions_*2);
       cplex_.setParam(IloCplex::SolnPoolIntensity, 4);
-      cplex_.setParam(IloCplex::SolnPoolReplace, 0);
+      cplex_.setParam(IloCplex::SolnPoolReplace, 2);
+      cplex_.setParam(IloCplex::SolnPoolAGap, 0.5);
       
-		
       // set hints
       cplex_.setParam(IloCplex::CutUp, parameter_.cutUp_);
 
@@ -349,12 +349,13 @@ LPCplex<GM, ACC>::infer
       cplex_.setParam(IloCplex::Covers, parameter_.coverCutLevel_);
       cplex_.setParam(IloCplex::DisjCuts, parameter_.disjunctiverCutLevel_);
       cplex_.setParam(IloCplex::Cliques, parameter_.cliqueCutLevel_);
-  
+
       // solve problem
       if(!cplex_.solve()) {
          std::cout << "failed to optimize. " <<cplex_.getStatus() << std::endl;
          return UNKNOWN;
       }
+      cplex_.populate();
       for (int N=0;N<numberOfSolutions_;N++){
 		cplex_.getValues(sol_[N], x_,N);
 	   }  
